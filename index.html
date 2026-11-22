@@ -11,31 +11,66 @@ button{height:48px;border:0;border-radius:999px;background:#B6E07A;color:#04401F
 <script>
 /* The page itself is small and loads at once; the encrypted content is one separate file, fetched here with its progress shown.
    A password entered before that file has arrived is held and used when it has (a fast typist used to submit early and the form reloaded).
-   Spaces around a pasted password are dropped. Every failure says what it is. */
-const D={salt:"OPmcUGfvMdWF/p48pYWviQ==",iv:"SFku4zCWICrBih4U",iter:600000,file:"site.41b3fd5697.bin",size:21811223};
+   Spaces around a pasted password are dropped.
+   This copy of the page can be older than the site: a tab left open for days, or a copy a browser kept. Every publish gives the content a new
+   file name, salt and IV and removes the old file, so an old copy asks for a file that is gone, or holds one the password no longer opens.
+   So when the download fails (not found, no network, wrong size) or the file does not decrypt, this page is fetched again past every cache,
+   the new values are read from it, and the work goes on with the password already typed. Two such tries, then one sentence asks for a reload.
+   The cause of each failure goes to the console.
+   What a tab remembers after it has opened is the key to this build's content, with this build's salt beside it, and never the password. A new
+   build has a new salt and so a new key: the remembered one is dropped and the password is asked for again. (Until 22 Nov the tab kept the
+   password itself, where anything running on this address could read it.) */
+let D={"salt":"va9BrDYCg0CtJQaZY4MERw==","iv":"oD4bkpXG0NQ6GG6n","iter":600000,"file":"site.1bd66d824c.bin","size":21811223};
 const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 const f=document.getElementById('f'),e=document.getElementById('e'),p=document.getElementById('p');
-let data=null,fail='',want=null,auto=false,busy=false,pct=0;
+let data=null,fail='',want=null,auto=false,rs='',busy=false,loading=false,pct=0,left=2;   /* want: the typed password, or the remembered key's 32 bytes (auto, for the salt rs) */
 const say=t=>{e.textContent=t};
-async function go(pw){busy=true;say('Opening…');
- try{const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
-  const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(D.salt),iterations:D.iter,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
+const note=()=>say(want!==null?'Downloading, '+pct+' %. It opens as soon as this finishes.':'Getting ready, '+pct+' %');
+const why=x=>{try{console.warn('Lock page: '+(x&&x.message?x.message:x))}catch(y){}};
+/* the newest copy of this page, never from a cache. True when it carries other values than the ones in hand, which are then replaced. */
+async function renew(){
+ const c=new AbortController(),t=setTimeout(()=>c.abort(),8000);
+ try{const r=await fetch(location.pathname+'?now='+Date.now(),{cache:'no-store',signal:c.signal});if(!r.ok)throw new Error('the server answered '+r.status+' for this page');
+  const m=/\bD=(\{[^}]*\})/.exec(await r.text()),n=m?JSON.parse(m[1]):null;
+  if(!n||!/^site\.[0-9a-f]+\.bin$/.test(n.file)||!n.salt||!n.iv||!(n.iter>0)||!(n.size>0))throw new Error('the newer copy of this page could not be read');
+  if(n.file===D.file&&n.salt===D.salt&&n.iv===D.iv)return false;
+  D=n;return true}
+ finally{clearTimeout(t)}}
+async function get(again){
+ const r=await fetch(D.file,again?{cache:'reload'}:{});if(!r.ok)throw new Error('the server answered '+r.status+' for '+D.file);
+ let out;
+ if(r.body&&r.body.getReader){const rd=r.body.getReader(),parts=[];let n=0;
+  for(;;){const x=await rd.read();if(x.done)break;parts.push(x.value);n+=x.value.length;pct=Math.min(99,Math.round(100*n/D.size));if(!busy)note()}
+  out=new Uint8Array(n);let o=0;for(const x of parts){out.set(x,o);o+=x.length}}
+ else out=new Uint8Array(await r.arrayBuffer());
+ if(out.length!==D.size)throw new Error(D.file+' is '+out.length+' bytes, not '+D.size);
+ return out}
+async function go(w){busy=true;say('Opening…');
+ try{let raw=w;
+  if(typeof w==='string'){const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(w),'PBKDF2',false,['deriveBits']);
+   raw=new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',salt:b64(D.salt),iterations:D.iter,hash:'SHA-256'},k0,256))}
+  const k=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);
   let pt;try{pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(D.iv)},k,data)}
-  catch(x){busy=false;want=null;if(auto){auto=false;try{sessionStorage.removeItem('k')}catch(y){}say('')}else{say('That password is not right.');p.select()}return}
-  const html=new TextDecoder().decode(pt);try{sessionStorage.setItem('k',pw)}catch(x){}
+  catch(x){let moved=false;if(left>0){left--;try{moved=await renew()}catch(y){why(y)}}
+   busy=false;if(moved){why('this copy was older than the site');load();return}
+   want=null;if(auto){auto=false;try{sessionStorage.removeItem('k')}catch(y){}say('');p.focus()}else{say('That password is not right.');p.select()}return}
+  const html=new TextDecoder().decode(pt);try{sessionStorage.setItem('k',D.salt+'.'+btoa(String.fromCharCode.apply(null,raw)))}catch(x){}
   document.open();document.write(html);document.close();
  }catch(x){busy=false;want=null;say('The page could not be opened: '+(x&&x.message?x.message:x)+'.')}}
 async function load(){
  if(!window.isSecureContext||!window.crypto||!crypto.subtle){fail='This page opens only over https. Check that its address begins with https://';say(fail);return}
- try{const r=await fetch(D.file);if(!r.ok)throw new Error('the server answered '+r.status);
-  if(r.body&&r.body.getReader){const rd=r.body.getReader(),parts=[];let n=0;
-   for(;;){const x=await rd.read();if(x.done)break;parts.push(x.value);n+=x.value.length;pct=Math.min(99,Math.round(100*n/D.size));if(!busy)say(want!==null?'Downloading, '+pct+' %. It opens as soon as this finishes.':'Getting ready, '+pct+' %');}
-   const out=new Uint8Array(n);let o=0;for(const x of parts){out.set(x,o);o+=x.length}data=out}
-  else data=new Uint8Array(await r.arrayBuffer());
-  if(want!==null)go(want);else say('');
- }catch(x){fail='The page could not be downloaded ('+(x&&x.message?x.message:x)+'). Check the connection, then reload.';say(fail)}}
+ if(loading)return;loading=true;data=null;pct=0;if(want!==null)note();
+ for(let again=false;;again=true){
+  try{data=await get(again);break}
+  catch(x){why(x);
+   if(left<1){loading=false;fail='The page did not load, so please reload it.';say(fail);return}
+   if(again)await new Promise(r=>setTimeout(r,1500));
+   left--;pct=0;note();try{await renew()}catch(y){why(y)}}}
+ loading=false;if(auto&&rs!==D.salt){auto=false;want=null;try{sessionStorage.removeItem('k')}catch(y){}}
+ if(want!==null)go(want);else say('')}
 f.addEventListener('submit',ev=>{ev.preventDefault();const pw=p.value.trim();if(!pw||busy)return;if(fail){say(fail);return}auto=false;want=pw;
- if(data)go(pw);else say('Downloading, '+pct+' %. It opens as soon as this finishes.')});
-try{const s=sessionStorage.getItem('k');if(s){want=s;auto=true}}catch(x){}
+ if(data){left=2;go(pw)}else note()});
+try{const s=sessionStorage.getItem('k');if(s){const i=s.indexOf('.');let w=null;try{if(i>0)w=b64(s.slice(i+1))}catch(x){}
+ if(w&&w.length===32){rs=s.slice(0,i);want=w;auto=true}else sessionStorage.removeItem('k')}}catch(x){}
 load();
 </script></body></html>
